@@ -4,7 +4,7 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 
 # Misal dataset sudah ada di CSV
-df = pd.read_csv("D:\skripsi\Smart Agriculture Technology for Reliable Intelligent Automation\CAPSTONE PROJECT\Datasets\dataset_selada_no_age.csv")
+df = pd.read_csv("D:\skripsi\CAPSTONE PROJECT\Datasets\dataset_selada_no_age.csv")
 
 X = df[["suhu","kelembaban","kelembaban_tanah","intensitas_cahaya"]]  # fitur
 y = df["label"]  # target

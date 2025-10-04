@@ -120,7 +120,7 @@ def publish_relay(relay_id: int, state: str):
 # ===================== Decision Tree =====================
 
 
-df = pd.read_csv(os.path.join(current_folder,"D:\skripsi\Smart Agriculture Technology for Reliable Intelligent Automation\CAPSTONE PROJECT\Datasets\dataset_selada_no_age.csv"))
+df = pd.read_csv(os.path.join(current_folder,"D:\skripsi\CAPSTONE PROJECT\Datasets\dataset_selada_no_age.csv"))
 FEATURES = ["suhu", "kelembaban", "kelembaban_tanah", "intensitas_cahaya"]
 TARGET = "label"
 

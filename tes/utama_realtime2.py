@@ -78,7 +78,7 @@ def publish_relay(rid, state):
         relay_state[rid] = state
 
 # ===================== DECISION TREE =====================
-df = pd.read_csv("D:\skripsi\Smart Agriculture Technology for Reliable Intelligent Automation\CAPSTONE PROJECT\Datasets\dataset_selada_no_age.csv")
+df = pd.read_csv("D:\skripsi\CAPSTONE PROJECT\Datasets\dataset_selada_no_age.csv")
 FEATURES = ["suhu", "kelembaban", "kelembaban_tanah", "intensitas_cahaya"]
 TARGET = "label"
 
