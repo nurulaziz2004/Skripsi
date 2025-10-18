@@ -13,7 +13,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 import matplotlib.pyplot as plt
 
 # ====== Konfigurasi broker MQTT ======
-BROKER = "test.mosquitto.org"
+BROKER = "103.186.1.210"
 PORT = 1883
 TOPIC_BASE = "SatriaSensors773546"
 
