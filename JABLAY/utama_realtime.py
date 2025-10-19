@@ -1,10 +1,9 @@
-# ====== Install ======
-# pip install paho-mqtt==2.1.0 flask==3.1.1 scikit-learn==1.5.2 matplotlib==3.9.2 pandas==2.2.3
-
 import os
 import time
 import threading
+import subprocess
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 try :
     import paho.mqtt.client as mqtt
@@ -16,7 +15,7 @@ try :
     from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
     import matplotlib
     import matplotlib.pyplot as plt
-    matplotlib.use('Agg')  # gunakan backend non-GUI
+    matplotlib.use('Agg')
 except :
     print("ADA LIBRARY GAGAL, MULAI MENGINSTAL ..... ")
     time.sleep(5)
@@ -62,7 +61,6 @@ sensor_topics = [
 
 SENSOR_KEYS = [t.split("/")[-1] for t in sensor_topics]
 
-# ===================== State Global =====================
 sensor_data = {k: None for k in SENSOR_KEYS}
 sensor_timestamp = {k: None for k in SENSOR_KEYS}
 control_mode = {"mode": "manual"}
@@ -78,17 +76,33 @@ decision_info = {
 
 # ===================== MQTT =====================
 def on_connect(client, userdata, flags, rc):
-    print("Connected with result code", rc)
-    for t in sensor_topics:
-        client.subscribe(t)
-    for t in RELAY_TOPICS.values():
-        client.subscribe(t)
+    print(f"[MQTT] Connected with result code {rc}")
+    if rc == 0:
+        print("[MQTT] Connection successful! Subscribing to topics...")
+        for t in sensor_topics:
+            client.subscribe(t)
+            print(f"  ✓ Subscribed: {t}")
+        for t in RELAY_TOPICS.values():
+            client.subscribe(t)
+            print(f"  ✓ Subscribed: {t}")
+    else:
+        print(f"[MQTT] Connection failed with code {rc}")
 
 def safe_float(s):
     try:
         return float(str(s).strip())
     except:
         return None
+
+def on_disconnect(client, userdata, rc):
+    """Callback saat koneksi terputus"""
+    if rc != 0:
+        print(f"[MQTT] Unexpected disconnect! RC: {rc}. Auto-reconnecting...")
+        # Paho MQTT akan auto-reconnect karena loop_start() aktif
+
+def on_publish(client, userdata, mid):
+    """Callback saat publish berhasil dikirim ke broker"""
+    pass  # Matikan log untuk mengurangi overhead
 
 def on_message(client, userdata, msg):
     topic = msg.topic
@@ -101,21 +115,79 @@ def on_message(client, userdata, msg):
         sensor_timestamp[key] = datetime.now().strftime("%H:%M:%S")
     for rid, rtopic in RELAY_TOPICS.items():
         if topic == rtopic:
-            print(f"[RELAY-ECHO] relay{rid} <- {payload}")
+            print(f"[RELAY-ECHO] relay{rid} <- {payload} (ESP32 terima!)")
 
 client = mqtt.Client(client_id="SatriaSensors_FlaskDT", protocol=mqtt.MQTTv311)
 client.on_connect = on_connect
+client.on_disconnect = on_disconnect  # Auto-reconnect handler
 client.on_message = on_message
-client.connect(BROKER, PORT, 60)
+client.on_publish = on_publish  # Tambah callback untuk track publish
+
+# Koneksi MQTT dan tunggu sampai ready
+print(f"[MQTT] Connecting to {BROKER}:{PORT}...")
+client.connect(BROKER, PORT, keepalive=30)  # Ubah dari 60 ke 30 detik - lebih responsif
 client.loop_start()
 
+# TUNGGU sampai koneksi berhasil (maksimal 10 detik)
+mqtt_ready = False
+for i in range(50):  # 50 x 0.2s = 10 detik
+    if client.is_connected():
+        mqtt_ready = True
+        print(f"[MQTT] Connected and ready! ✓")
+        break
+    time.sleep(0.2)
+
+if not mqtt_ready:
+    print("[MQTT] WARNING: Connection timeout, but continuing...")
+
 def publish_relay(relay_id: int, state: str):
+    start_time = time.time()
     state = "ON" if str(state).upper() == "ON" else "OFF"
     topic = RELAY_TOPICS.get(relay_id)
     if topic:
-        client.publish(topic, state)
+        # METODE 1: Pakai paho-mqtt (client yang sudah ada)
+        result = client.publish(topic, state, qos=0, retain=False)
         relay_state[relay_id] = state
-        print(f"[RELAY] relay{relay_id} => {state}")
+        elapsed = (time.time() - start_time) * 1000
+        print(f"[RELAY] relay{relay_id} => {state} | Publish time: {elapsed:.2f}ms | RC: {result.rc}")
+
+# Thread pool untuk non-blocking publish
+publish_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="MQTTPub")
+
+def _do_publish(relay_id: int, state: str, topic: str):
+    """Internal function untuk publish di background thread"""
+    try:
+        # Tunggu jika client belum connected
+        max_wait = 20  # 2 detik max
+        for i in range(max_wait):
+            if client.is_connected():
+                break
+            time.sleep(0.1)
+        
+        if not client.is_connected():
+            print(f"[RELAY-BG-SKIP] relay{relay_id} => {state} (not connected)")
+            return
+            
+        info = client.publish(topic, state, qos=0)
+        if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            print(f"[RELAY-BG] relay{relay_id} => {state} sent ✓")
+        else:
+            print(f"[RELAY-BG] relay{relay_id} => {state} RC: {info.rc}")
+    except Exception as e:
+        print(f"[RELAY-BG-ERROR] relay{relay_id}: {e}")
+
+def publish_relay_direct(relay_id: int, state: str):
+    """Publish NON-BLOCKING di background thread - return instant!"""
+    start = time.time()
+    state = "ON" if str(state).upper() == "ON" else "OFF"
+    topic = RELAY_TOPICS.get(relay_id)
+    relay_state[relay_id] = state  # Update state langsung
+    
+    if topic:
+        # Submit ke thread pool - return INSTANT tanpa tunggu
+        publish_executor.submit(_do_publish, relay_id, state, topic)
+        elapsed = (time.time() - start) * 1000
+        print(f"[RELAY-INSTANT] relay{relay_id} => {state} | Time: {elapsed:.2f}ms (queued) ✓")
 
 # ===================== Decision Tree =====================
 
@@ -231,13 +303,24 @@ pre { background:#f5f5f5; padding:10px; border-radius:8px; overflow:auto; }
 .tag { display:inline-block; padding:2px 6px; border-radius:6px; background:#eef; margin-right:6px; font-size:12px; }
 </style>
 <script>
-async function setMode(mode){
-  await fetch('/mode/'+mode, {method:'POST'});
+function setMode(mode){
+  fetch('/mode/'+mode, {method:'POST'});
   refreshAll();
 }
-async function relay(rid,state){
-  await fetch(`/relay/${rid}/${state}`, {method:'POST'});
-  refreshAll();
+
+function relay(rid,state){
+  // Update UI INSTANT - tidak tunggu apapun!
+  document.getElementById('r'+rid).innerText=state;
+  document.getElementById('r'+rid+'_on').classList.toggle('active', state=='ON');
+  document.getElementById('r'+rid+'_off').classList.toggle('active', state=='OFF');
+  
+  // Kirim ke server pakai beacon API - tercepat di browser
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(`/relay/${rid}/${state}`);
+  } else {
+    // Fallback untuk browser lama
+    new Image().src = `/relay/${rid}/${state}?_=${+new Date()}`;
+  }
 }
 
 async function refreshSensors() {
@@ -286,8 +369,17 @@ async function refreshRules(){
   document.getElementById('rules').innerText=t;
   document.getElementById('tree').src='/static/tree.png?ts='+Date.now();
 }
-async function refreshAll(){ refreshSensors(); refreshDecision(); refreshRules(); }
-setInterval(refreshAll,500); window.onload=refreshAll;
+async function refreshAll(){ 
+  refreshSensors(); 
+  refreshDecision(); 
+  // refreshRules(); // Jangan refresh rules terus-menerus, hanya sekali saat load
+}
+// Refresh cepat untuk sensor & decision, rules hanya sekali
+setInterval(refreshAll,1000); // Ubah dari 500ms ke 1000ms untuk kurangi beban
+window.onload=function(){ 
+  refreshAll(); 
+  refreshRules(); // Rules hanya load sekali saat pertama
+};
 </script>
 </head>
 <body>
@@ -331,15 +423,16 @@ Mode: <b id="mode">-</b>
 @app.route("/")
 def index(): return render_template_string(PAGE)
 
-@app.route("/mode/<mode>", methods=["POST"])
+@app.route("/mode/<mode>", methods=["POST", "GET"])
 def set_mode(mode):
     control_mode["mode"] = "auto" if mode.lower().strip()=="auto" else "manual"
-    return jsonify(ok=True, mode=control_mode["mode"])
+    return "", 204  # No Content - lebih cepat dari jsonify
 
-@app.route("/relay/<int:rid>/<state>", methods=["POST"])
+@app.route("/relay/<int:rid>/<state>", methods=["POST", "GET"])
 def set_relay(rid,state):
-    publish_relay(rid,state)
-    return jsonify(ok=True, relay=rid, state=relay_state[rid])
+    # PAKAI MOSQUITTO_PUB LANGSUNG - seperti command terminal Anda!
+    publish_relay_direct(rid, state)
+    return "", 204  # No Content - response tercepat
 
 @app.route("/sensors")
 def sensors_api():
