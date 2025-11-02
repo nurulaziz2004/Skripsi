@@ -15,7 +15,7 @@ jobs:
         run: |
           echo "Deploying to Coolify..."
           curl -X POST \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
+            -H "Authorization: Bearer '${{ secrets.COOLIFY_TOKEN }}'" \
             -H "Content-Type: application/json" \
-            -d '{"app_id": "${{ secrets.COOLIFY_APP_ID }}"}' \
-            ${{ secrets.COOLIFY_URL }}/api/v1/deploy
+            -d '{"app_id": "'"${{ secrets.COOLIFY_APP_ID }}"'"}' \
+            "${{ secrets.COOLIFY_URL }}/api/v1/deploy"
