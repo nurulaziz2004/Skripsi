@@ -1,6 +1,9 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-COPY . .
+
+COPY . /app
+
 RUN pip install --no-cache-dir psycopg2-binary redis flask
-CMD ["python", "utama_realtime.py"]
+
+CMD ["python", "JABLAY/utama_realtime.py"]
