@@ -70,6 +70,7 @@ PORT = 1883
 TOPIC_BASE = "SatriaSensors773546"
 current_folder = os.path.dirname(os.path.abspath(__file__))
 print("current FOLDER : ",current_folder)
+print("DEPLOY AUTO ITS WORKING")
 
 # ===================== Konfigurasi DB =====================
 DB_CONFIG = {
