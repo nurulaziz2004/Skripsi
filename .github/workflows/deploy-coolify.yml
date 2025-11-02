@@ -9,12 +9,11 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Trigger Coolify Deploy
         run: >
           curl -X POST
           -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
           -H "Content-Type: application/json"
-          -d '{"uuid":"${{ secrets.COOLIFY_APP_ID }}"}'
-          "${{ secrets.COOLIFY_URL }}/api/v1/deploy"
+          -d '{"uuid":"o08scwskosow8cosgo8wsos0"}'
+          https://coolify.raishannan.com/api/v1/deploy
