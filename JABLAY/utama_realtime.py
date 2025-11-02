@@ -3,11 +3,11 @@
 
 import os
 import time
-import logging
 import threading
 from datetime import datetime
 import psycopg2
 import redis
+import logging
 # ===================== Konfigurasi REDIS =====================
 REDIS_CONFIG = {
     "host": "redis.raishannan.com",
@@ -24,6 +24,14 @@ redis_client = redis.Redis(
     decode_responses=True
 )
 
+# Configure logging: default WARNING to keep output quiet. Use LOG_LEVEL env to override.
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
+numeric_level = getattr(logging, LOG_LEVEL, logging.WARNING)
+logging.basicConfig(level=numeric_level, format='%(asctime)s %(levelname)s:%(name)s: %(message)s')
+# Silence Flask/Werkzeug access logs (the repeated GET /... lines)
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+logging.getLogger('werkzeug.serving').setLevel(logging.WARNING)
+
 try :
     import paho.mqtt.client as mqtt
     from flask import Flask, render_template_string, request, jsonify
@@ -36,7 +44,7 @@ try :
     import matplotlib.pyplot as plt
     matplotlib.use('Agg')  # gunakan backend non-GUI
 except :
-    logging.warning("ADA LIBRARY GAGAL, MULAI MENGINSTAL ..... ")
+    print("ADA LIBRARY GAGAL, MULAI MENGINSTAL ..... ")
     time.sleep(5)
     os.system("pip install paho-mqtt==2.1.0 flask==3.1.1 scikit-learn==1.5.2 matplotlib==3.9.2 pandas==2.2.3")
     import paho.mqtt.client as mqtt
@@ -61,11 +69,7 @@ USER = "admin"
 PORT = 1883
 TOPIC_BASE = "SatriaSensors773546"
 current_folder = os.path.dirname(os.path.abspath(__file__))
-# configure logging (default WARNING). Set env var LOG_LEVEL=DEBUG to see debug/info logs.
-log_level_name = os.environ.get('LOG_LEVEL', 'WARNING').upper()
-log_level = getattr(logging, log_level_name, logging.WARNING)
-logging.basicConfig(level=log_level, format='[%(levelname)s] %(asctime)s %(message)s')
-logging.debug("current FOLDER : %s", current_folder)
+print("current FOLDER : ",current_folder)
 
 # ===================== Konfigurasi DB =====================
 DB_CONFIG = {
@@ -125,7 +129,7 @@ decision_info = {
 
 # ===================== MQTT =====================
 def on_connect(client, userdata, flags, rc):
-    logging.info("Connected with result code %s", rc)
+    print("Connected with result code", rc)
     for t in sensor_topics:
         client.subscribe(t)
     for t in RELAY_TOPICS.values():
@@ -175,13 +179,13 @@ def on_message(client, userdata, msg):
                     cur.close()
                     conn.close()
                 except Exception as e:
-                    logging.error("[DB SENSOR ERROR] %s", e)
+                    print("[DB SENSOR ERROR]", e)
                 redis_client.delete(redis_key)
         except Exception as e:
-            logging.error("[REDIS SENSOR ERROR] %s", e)
+            print("[REDIS SENSOR ERROR]", e)
     for rid, rtopic in RELAY_TOPICS.items():
         if topic == rtopic:
-            logging.debug("[RELAY-ECHO] relay%s <- %s", rid, payload)
+            print(f"[RELAY-ECHO] relay{rid} <- {payload}")
             # Update status relay di database kontrol berdasarkan feedback ESP32
             try:
                 conn = get_db_conn()
@@ -195,22 +199,27 @@ def on_message(client, userdata, msg):
                 cur.close()
                 conn.close()
             except Exception as e:
-                logging.error("[DB RELAY FEEDBACK ERROR] %s", e)
+                print("[DB RELAY FEEDBACK ERROR]", e)
 
 client = mqtt.Client(client_id="SatriaSensors_FlaskDT", protocol=mqtt.MQTTv311)
 client.on_connect = on_connect
 client.on_message = on_message
+# set username/password if provided
+try:
+    client.username_pw_set(USER, PASSWORD)
+except Exception:
+    logging.debug("Could not set MQTT username/password")
 # Use non-blocking connect so the process doesn't crash if broker is down; paho will handle reconnects
 try:
     # prefer connect_async which returns immediately and reconnects in background
     client.connect_async(BROKER, PORT, 60)
 except Exception as e:
-    logging.error("[MQTT CONNECT_ASYNC ERROR] %s", e)
+    print("[MQTT CONNECT_ASYNC ERROR]", e)
     # fallback to a safe, wrapped connect attempt (won't raise here because we catch exceptions)
     try:
         client.connect(BROKER, PORT, 60)
     except Exception as e2:
-        logging.error("[MQTT CONNECT ERROR] %s", e2)
+        print("[MQTT CONNECT ERROR]", e2)
 client.loop_start()
 
 def publish_relay(relay_id: int, state: str):
@@ -227,7 +236,7 @@ def publish_relay(relay_id: int, state: str):
             # fallback to simple publish
             client.publish(topic, state)
         relay_state[relay_id] = state
-        logging.info("[RELAY] relay%s => %s", relay_id, state)
+        print(f"[RELAY] relay{relay_id} => {state}")
         # Update status relay di database kontrol
         try:
             conn = get_db_conn()
@@ -246,7 +255,7 @@ def publish_relay(relay_id: int, state: str):
             except Exception:
                 pass
         except Exception as e:
-            logging.error("[DB RELAY ERROR] %s", e)
+            print("[DB RELAY ERROR]", e)
 
 def fast_publish_thread(relay_id: int, state: str):
     """Background fast publish: publish via MQTT client with QoS=1 and retries, update in-memory state (no DB write)."""
@@ -277,7 +286,7 @@ def fast_publish_thread(relay_id: int, state: str):
                 published = True
             if published:
                 relay_state[relay_id] = state
-                logging.info("[FAST-RELAY] relay%s => %s (attempt %s)", relay_id, state, attempts)
+                print(f"[FAST-RELAY] relay{relay_id} => {state} (attempt {attempts})")
                 # persist to DB so manual override is respected
                 try:
                     conn = get_db_conn()
@@ -291,19 +300,19 @@ def fast_publish_thread(relay_id: int, state: str):
                     cur.close()
                     conn.close()
                 except Exception as e:
-                    logging.error("[DB FAST-RELAY UPDATE ERROR] %s", e)
+                    print("[DB FAST-RELAY UPDATE ERROR]", e)
                 try:
                     manual_override[relay_id] = datetime.now()
                 except Exception:
                     pass
                 return
         except Exception as e:
-            logging.warning("[FAST-RELAY ERROR] attempt %s %s", attempts, e)
+            print(f"[FAST-RELAY ERROR] attempt {attempts}", e)
             try:
                 client.reconnect()
             except Exception:
                 time.sleep(0.05)
-    logging.error("[FAST-RELAY FAILED] relay%s => %s after %s attempts", relay_id, state, max_attempts)
+    print(f"[FAST-RELAY FAILED] relay{relay_id} => {state} after {max_attempts} attempts")
 
 # ===================== Decision Tree =====================
 
@@ -322,7 +331,7 @@ model = DecisionTreeClassifier(max_depth=4, random_state=42)
 model.fit(X_train, y_train)
 
 y_pred = model.predict(X_test)
-print("Akurasi: %s", accuracy_score(y_test, y_pred))
+print("Akurasi:", accuracy_score(y_test, y_pred))
 
 os.makedirs(os.path.join(current_folder,"static"), exist_ok=True)
 plt.figure(figsize=(13, 7))
@@ -398,7 +407,7 @@ def auto_control_loop():
                     decision_info["updated_at"] = datetime.now().strftime("%H:%M:%S")
             time.sleep(0.5)
         except Exception as e:
-            logging.warning("[AUTO LOOP ERROR] %s", e)
+            print("[AUTO LOOP ERROR]", e)
             time.sleep(1)
 
 threading.Thread(target=auto_control_loop, daemon=True).start()
@@ -661,7 +670,7 @@ def fast_relay_sync(rid, state):
                 cur.close()
                 conn.close()
             except Exception as e:
-                logging.error("[DB FAST-RELAY_SYNC UPDATE ERROR] %s", e)
+                print("[DB FAST-RELAY_SYNC UPDATE ERROR]", e)
             relay_state[rid] = state_norm
             try:
                 manual_override[rid] = datetime.now()
