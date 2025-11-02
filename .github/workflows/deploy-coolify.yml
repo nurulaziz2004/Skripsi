@@ -16,5 +16,5 @@ jobs:
           curl -X POST
           -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
           -H "Content-Type: application/json"
-          -d '{"uuid":"${{ secrets.COOLIFY_APP_UUID }}"}'
+          -d '{"uuid":"${{ secrets.COOLIFY_APP_ID }}"}'
           "${{ secrets.COOLIFY_URL }}/api/v1/deploy"
