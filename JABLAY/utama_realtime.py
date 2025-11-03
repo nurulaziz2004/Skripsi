@@ -779,6 +779,23 @@ def health_check():
         report['mqtt_error'] = str(e)
     return jsonify(report)
 
-if __name__=="__main__":
-    # enable threading so the server can handle fast_relay posts concurrently
+# ===================== MAIN APP START =====================
+# ===================== MAIN APP START =====================
+
+# Flag global supaya thread Redis tidak dijalankan lebih dari satu kali
+redis_thread_started = False  
+
+if __name__ == "__main__":
+    # Jalankan MQTT loop (cuma sekali)
+    client.loop_start()
+
+    # Jalankan redis_to_db_loop hanya sekali
+    if not redis_thread_started:
+        redis_thread_started = True
+        threading.Thread(target=redis_to_db_loop, daemon=True).start()
+        print("[THREAD] redis_to_db_loop dimulai sekali saja")
+
+    # Jalankan Flask tanpa debug agar tidak re-run dua kali
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+
+
