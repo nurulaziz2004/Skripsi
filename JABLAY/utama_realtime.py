@@ -217,7 +217,17 @@ def redis_to_db_loop():
                             data = redis_client.hgetall(key)
                             if not data:
                                 continue
+
+                            # Pastikan semua field sensor ada (6 total)
+                            expected_fields = {"suhu", "kelembaban", "kelembaban_tanah_1",
+                                            "kelembaban_tanah_2", "kelembaban_tanah_3", "ldr"}
+
+                            if len(set(data.keys()) & expected_fields) < len(expected_fields):
+                                # Belum lengkap, skip dulu
+                                continue
+
                             print(f"[REDIS SEND] inserting data from {key}: {data}")
+
                             try:
                                 conn = get_db_conn()
                                 cur = conn.cursor()
