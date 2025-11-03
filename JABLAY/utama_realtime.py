@@ -215,16 +215,9 @@ def redis_to_db_loop():
                     for key in keys:
                         with insert_lock:
                             data = redis_client.hgetall(key)
+                            # tetap kirim meskipun kosong
                             if not data:
-                                continue
-
-                            # Pastikan semua field sensor ada (6 total)
-                            expected_fields = {"suhu", "kelembaban", "kelembaban_tanah_1",
-                                            "kelembaban_tanah_2", "kelembaban_tanah_3", "ldr"}
-
-                            if len(set(data.keys()) & expected_fields) < len(expected_fields):
-                                # Belum lengkap, skip dulu
-                                continue
+                                data = {}
 
                             print(f"[REDIS SEND] inserting data from {key}: {data}")
 
@@ -252,11 +245,13 @@ def redis_to_db_loop():
                                 print(f"[DB OK] data inserted from {key}")
                             except Exception as e:
                                 print("[DB SENSOR ERROR]", e)
+
                 last_insert = now
             time.sleep(1)
         except Exception as e:
             print("[REDIS LOOP ERROR]", e)
             time.sleep(2)
+
 
             
 client = mqtt.Client(client_id="SatriaSensors_FlaskDT", protocol=mqtt.MQTTv311)
