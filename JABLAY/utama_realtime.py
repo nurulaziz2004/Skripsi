@@ -12,17 +12,18 @@ import logging
 REDIS_CONFIG = {
     "host": "redis.raishannan.com",
     "port": 63802,
-    "username": "redis",
+    "username": "default",
     "password": "CrGyLcQ3HSonzLUYy38oXHlylNcTzEE5Q9Jq0h9HhY1gYwxLOMyvhQfCksLHWVUL"
 }
 
 redis_client = redis.Redis(
     host=REDIS_CONFIG["host"],
     port=REDIS_CONFIG["port"],
-    password=REDIS_CONFIG["password"],
     username=REDIS_CONFIG["username"],
+    password=REDIS_CONFIG["password"],
     decode_responses=True
 )
+
 
 # Configure logging: default WARNING to keep output quiet. Use LOG_LEVEL env to override.
 LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
@@ -151,77 +152,124 @@ def on_message(client, userdata, msg):
         val = safe_float(payload)
         sensor_data[key] = val
         sensor_timestamp[key] = datetime.now().strftime("%H:%M:%S")
-        # Buffer ke Redis
+
         try:
-            now = int(time.time())
+            now = int(time.time() // 5 * 5) 
             redis_key = f"sensor_buffer:{now}"
-            redis_client.hset(redis_key, key, val)
-            redis_client.expire(redis_key, 2)  # auto-expire
-            # Cek jika sudah lengkap 6 data
-            if redis_client.hlen(redis_key) == 6:
-                data = redis_client.hgetall(redis_key)
-                try:
-                    conn = get_db_conn()
-                    cur = conn.cursor()
-                    cur.execute("""
-                        INSERT INTO sensor (suhu, kelembaban, kelembaban_tanah1, kelembaban_tanah2, kelembaban_tanah3, ldr, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        data.get("suhu"),
-                        data.get("kelembaban"),
-                        data.get("kelembaban_tanah_1"),
-                        data.get("kelembaban_tanah_2"),
-                        data.get("kelembaban_tanah_3"),
-                        data.get("ldr"),
-                        datetime.now(),
-                        datetime.now()
-                    ))
-                    conn.commit()
-                    cur.close()
-                    conn.close()
-                except Exception as e:
-                    print("[DB SENSOR ERROR]", e)
-                redis_client.delete(redis_key)
+
+            if val is not None:
+                redis_client.hset(redis_key, key, str(val))
+                redis_client.expire(redis_key, 10)
+                print(f"[REDIS DEBUG] {redis_key} -> {redis_client.hlen(redis_key)} fields")
+            else:
+                print(f"[SKIP REDIS] key={key} payload={payload} (invalid float)")
         except Exception as e:
             print("[REDIS SENSOR ERROR]", e)
-    for rid, rtopic in RELAY_TOPICS.items():
-        if topic == rtopic:
-            print(f"[RELAY-ECHO] relay{rid} <- {payload}")
-            # Update status relay di database kontrol berdasarkan feedback ESP32
-            try:
-                conn = get_db_conn()
-                cur = conn.cursor()
-                cur.execute("UPDATE kontrol SET status=%s, updated_at=%s WHERE name=%s", (
-                    payload,
-                    datetime.now(),
-                    f"pompa{rid}"
-                ))
-                conn.commit()
-                cur.close()
-                conn.close()
-            except Exception as e:
-                print("[DB RELAY FEEDBACK ERROR]", e)
 
+    for rid, rtopic in RELAY_TOPICS.items():
+      if topic == rtopic:
+        payload_norm = "ON" if payload.strip().upper() == "ON" else "OFF"
+        relay_state[rid] = payload_norm
+        print(f"[RELAY MQTT FEEDBACK] relay{rid} => {payload_norm}")
+
+        # Simpan ke database (sinkronisasi otomatis)
+        try:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE kontrol
+                SET status = %s, updated_at = %s
+                WHERE name = %s
+            """, (payload_norm, datetime.now(), f"pompa{rid}"))
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"[DB SYNC] relay{rid} updated to {payload_norm}")
+        except Exception as e:
+            print("[DB RELAY SYNC ERROR]", e)
+
+        # Broadcast balik ke semua subscriber agar UI sinkron
+        try:
+            client.publish(f"{TOPIC_BASE}/relay{rid}", payload_norm, qos=1, retain=True)
+            print(f"[MQTT BROADCAST] relay{rid} => {payload_norm}")
+        except Exception as e:
+            print("[MQTT BROADCAST ERROR]", e)
+
+
+
+def redis_to_db_loop():
+    last_insert = 0
+    empty_count = 0
+    while True:
+        try:
+            now = int(time.time())
+            if now - last_insert >= 5:  # setiap 5 detik
+                keys = [k for k in redis_client.scan_iter("sensor_buffer:*")]
+                if not keys:
+                    empty_count += 1
+                    if empty_count % 6 == 0:  # log tiap 30 detik biar gak spam
+                        print("[REDIS LOOP] tidak ada data baru...")
+                else:
+                    empty_count = 0
+                    for key in keys:
+                        data = redis_client.hgetall(key)
+                        if not data:
+                            continue
+                        print(f"[REDIS SEND] inserting data from {key}: {data}")
+                        try:
+                            conn = get_db_conn()
+                            cur = conn.cursor()
+                            cur.execute("""
+                                INSERT INTO sensor (suhu, kelembaban, kelembaban_tanah1, kelembaban_tanah2,
+                                                    kelembaban_tanah3, ldr, created_at, updated_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            """, (
+                                data.get("suhu"),
+                                data.get("kelembaban"),
+                                data.get("kelembaban_tanah_1"),
+                                data.get("kelembaban_tanah_2"),
+                                data.get("kelembaban_tanah_3"),
+                                data.get("ldr"),
+                                datetime.now(),
+                                datetime.now()
+                            ))
+                            conn.commit()
+                            cur.close()
+                            conn.close()
+                            print(f"[DB OK] data inserted from {key}")
+                        except Exception as e:
+                            print("[DB SENSOR ERROR]", e)
+                        redis_client.delete(key)
+                last_insert = now
+            time.sleep(1)
+        except Exception as e:
+            print("[REDIS LOOP ERROR]", e)
+            time.sleep(2)
+            
 client = mqtt.Client(client_id="SatriaSensors_FlaskDT", protocol=mqtt.MQTTv311)
 client.on_connect = on_connect
 client.on_message = on_message
-# set username/password if provided
+
+# set username/password
 try:
     client.username_pw_set(USER, PASSWORD)
 except Exception:
     logging.debug("Could not set MQTT username/password")
-# Use non-blocking connect so the process doesn't crash if broker is down; paho will handle reconnects
+
+# connect
 try:
-    # prefer connect_async which returns immediately and reconnects in background
     client.connect_async(BROKER, PORT, 60)
 except Exception as e:
     print("[MQTT CONNECT_ASYNC ERROR]", e)
-    # fallback to a safe, wrapped connect attempt (won't raise here because we catch exceptions)
     try:
         client.connect(BROKER, PORT, 60)
     except Exception as e2:
         print("[MQTT CONNECT ERROR]", e2)
+
+# setelah semua siap, baru loop dan Redis thread
 client.loop_start()
+threading.Thread(target=redis_to_db_loop, daemon=True).start()
+
 
 def publish_relay(relay_id: int, state: str):
     state = "ON" if str(state).upper() == "ON" else "OFF"
