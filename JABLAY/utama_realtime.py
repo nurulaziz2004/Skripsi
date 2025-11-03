@@ -189,13 +189,14 @@ def on_message(client, userdata, msg):
             print("[DB RELAY SYNC ERROR]", e)
 
         # Broadcast balik ke semua subscriber agar UI sinkron
-        try:
-            client.publish(f"{TOPIC_BASE}/relay{rid}", payload_norm, qos=1, retain=True)
-            print(f"[MQTT BROADCAST] relay{rid} => {payload_norm}")
+        try:pass
+            
         except Exception as e:
             print("[MQTT BROADCAST ERROR]", e)
 
 
+
+insert_lock = threading.Lock()
 
 def redis_to_db_loop():
     last_insert = 0
@@ -203,48 +204,50 @@ def redis_to_db_loop():
     while True:
         try:
             now = int(time.time())
-            if now - last_insert >= 5:  # setiap 5 detik
+            if now - last_insert >= 5:
                 keys = [k for k in redis_client.scan_iter("sensor_buffer:*")]
                 if not keys:
                     empty_count += 1
-                    if empty_count % 6 == 0:  # log tiap 30 detik biar gak spam
+                    if empty_count % 6 == 0:
                         print("[REDIS LOOP] tidak ada data baru...")
                 else:
                     empty_count = 0
                     for key in keys:
-                        data = redis_client.hgetall(key)
-                        if not data:
-                            continue
-                        print(f"[REDIS SEND] inserting data from {key}: {data}")
-                        try:
-                            conn = get_db_conn()
-                            cur = conn.cursor()
-                            cur.execute("""
-                                INSERT INTO sensor (suhu, kelembaban, kelembaban_tanah1, kelembaban_tanah2,
-                                                    kelembaban_tanah3, ldr, created_at, updated_at)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            """, (
-                                data.get("suhu"),
-                                data.get("kelembaban"),
-                                data.get("kelembaban_tanah_1"),
-                                data.get("kelembaban_tanah_2"),
-                                data.get("kelembaban_tanah_3"),
-                                data.get("ldr"),
-                                datetime.now(),
-                                datetime.now()
-                            ))
-                            conn.commit()
-                            cur.close()
-                            conn.close()
-                            print(f"[DB OK] data inserted from {key}")
-                        except Exception as e:
-                            print("[DB SENSOR ERROR]", e)
-                        redis_client.delete(key)
+                        with insert_lock:
+                            data = redis_client.hgetall(key)
+                            if not data:
+                                continue
+                            print(f"[REDIS SEND] inserting data from {key}: {data}")
+                            try:
+                                conn = get_db_conn()
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    INSERT INTO sensor (suhu, kelembaban, kelembaban_tanah1, kelembaban_tanah2,
+                                                        kelembaban_tanah3, ldr, created_at, updated_at)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (
+                                    data.get("suhu"),
+                                    data.get("kelembaban"),
+                                    data.get("kelembaban_tanah_1"),
+                                    data.get("kelembaban_tanah_2"),
+                                    data.get("kelembaban_tanah_3"),
+                                    data.get("ldr"),
+                                    datetime.now(),
+                                    datetime.now()
+                                ))
+                                conn.commit()
+                                cur.close()
+                                conn.close()
+                                redis_client.delete(key)
+                                print(f"[DB OK] data inserted from {key}")
+                            except Exception as e:
+                                print("[DB SENSOR ERROR]", e)
                 last_insert = now
             time.sleep(1)
         except Exception as e:
             print("[REDIS LOOP ERROR]", e)
             time.sleep(2)
+
             
 client = mqtt.Client(client_id="SatriaSensors_FlaskDT", protocol=mqtt.MQTTv311)
 client.on_connect = on_connect
