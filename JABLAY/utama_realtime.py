@@ -199,59 +199,52 @@ def on_message(client, userdata, msg):
 insert_lock = threading.Lock()
 
 def redis_to_db_loop():
-    last_insert = 0
-    empty_count = 0
+    interval = 0.5  # detik
+    next_run = time.time()
+
     while True:
         try:
-            now = int(time.time())
-            if now - last_insert >= 5:
-                keys = [k for k in redis_client.scan_iter("sensor_buffer:*")]
-                if not keys:
-                    empty_count += 1
-                    if empty_count % 6 == 0:
-                        print("[REDIS LOOP] tidak ada data baru...")
-                else:
-                    empty_count = 0
-                    for key in keys:
-                        with insert_lock:
-                            data = redis_client.hgetall(key)
-                            # tetap kirim meskipun kosong
-                            if not data:
-                                data = {}
+            data = redis_client.hgetall("sensor_latest") or {}
 
-                            print(f"[REDIS SEND] inserting data from {key}: {data}")
+            # hanya insert kalau ada minimal 1 data valid
+            valid_fields = {k: v for k, v in data.items() if v not in (None, '', 'None')}
+            if len(valid_fields) > 0:
+                print(f"[REDIS SEND] inserting data: {data}")
+                try:
+                    conn = get_db_conn()
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO sensor (
+                            suhu, kelembaban, kelembaban_tanah1, kelembaban_tanah2,
+                            kelembaban_tanah3, ldr, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        data.get("suhu"),
+                        data.get("kelembaban"),
+                        data.get("kelembaban_tanah_1"),
+                        data.get("kelembaban_tanah_2"),
+                        data.get("kelembaban_tanah_3"),
+                        data.get("ldr"),
+                        datetime.now(),
+                        datetime.now()
+                    ))
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    print("[DB OK] inserted new row")
+                except Exception as e:
+                    print("[DB SENSOR ERROR]", e)
+            else:
+                print("[REDIS LOOP] skip insert (tidak ada data)")
 
-                            try:
-                                conn = get_db_conn()
-                                cur = conn.cursor()
-                                cur.execute("""
-                                    INSERT INTO sensor (suhu, kelembaban, kelembaban_tanah1, kelembaban_tanah2,
-                                                        kelembaban_tanah3, ldr, created_at, updated_at)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                """, (
-                                    data.get("suhu"),
-                                    data.get("kelembaban"),
-                                    data.get("kelembaban_tanah_1"),
-                                    data.get("kelembaban_tanah_2"),
-                                    data.get("kelembaban_tanah_3"),
-                                    data.get("ldr"),
-                                    datetime.now(),
-                                    datetime.now()
-                                ))
-                                conn.commit()
-                                cur.close()
-                                conn.close()
-                                redis_client.delete(key)
-                                print(f"[DB OK] data inserted from {key}")
-                            except Exception as e:
-                                print("[DB SENSOR ERROR]", e)
+            # jeda tetap 0.5 detik (biar interval stabil)
+            next_run += interval
+            time.sleep(max(0, next_run - time.time()))
 
-                last_insert = now
-            time.sleep(1)
         except Exception as e:
             print("[REDIS LOOP ERROR]", e)
-            time.sleep(2)
-
+            time.sleep(1)
 
             
 client = mqtt.Client(client_id="SatriaSensors_FlaskDT", protocol=mqtt.MQTTv311)
