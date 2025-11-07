@@ -205,7 +205,6 @@ def redis_to_db_loop():
     interval = 0.5  # detik
     while True:
         try:
-            # cari semua buffer yang belum kadaluarsa
             keys = sorted(redis_client.keys("sensor_buffer:*"))
             if not keys:
                 print("[REDIS LOOP] skip insert (tidak ada data)")
