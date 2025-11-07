@@ -148,68 +148,77 @@ def on_message(client, userdata, msg):
     payload = msg.payload.decode(errors="ignore")
     key = topic.split("/")[-1]
 
+    # kalau pesan dari sensor
     if key in sensor_data:
         val = safe_float(payload)
         sensor_data[key] = val
         sensor_timestamp[key] = datetime.now().strftime("%H:%M:%S")
 
         try:
-            now = int(time.time() // 5 * 5) 
+            now = int(time.time() // 5 * 5)
             redis_key = f"sensor_buffer:{now}"
 
             if val is not None:
-                redis_client.hset(redis_key, key, str(val))
-                redis_client.expire(redis_key, 10)
+                # Simpan ke buffer (per 5 detik)
+                pipe = redis_client.pipeline()
+                pipe.hset(redis_key, key, str(val))
+                pipe.expire(redis_key, 10)
+
+                # Simpan juga versi terbaru (untuk dashboard dan loop)
+                pipe.hset("sensor_latest", key, str(val))
+                pipe.expire("sensor_latest", 15)
+
+                pipe.execute()
                 print(f"[REDIS DEBUG] {redis_key} -> {redis_client.hlen(redis_key)} fields")
             else:
                 print(f"[SKIP REDIS] key={key} payload={payload} (invalid float)")
         except Exception as e:
             print("[REDIS SENSOR ERROR]", e)
 
+    # kalau pesan dari relay feedback
     for rid, rtopic in RELAY_TOPICS.items():
-      if topic == rtopic:
-        payload_norm = "ON" if payload.strip().upper() == "ON" else "OFF"
-        relay_state[rid] = payload_norm
-        print(f"[RELAY MQTT FEEDBACK] relay{rid} => {payload_norm}")
+        if topic == rtopic:
+            payload_norm = "ON" if payload.strip().upper() == "ON" else "OFF"
+            relay_state[rid] = payload_norm
+            print(f"[RELAY MQTT FEEDBACK] relay{rid} => {payload_norm}")
 
-        # Simpan ke database (sinkronisasi otomatis)
-        try:
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE kontrol
-                SET status = %s, updated_at = %s
-                WHERE name = %s
-            """, (payload_norm, datetime.now(), f"pompa{rid}"))
-            conn.commit()
-            cur.close()
-            conn.close()
-            print(f"[DB SYNC] relay{rid} updated to {payload_norm}")
-        except Exception as e:
-            print("[DB RELAY SYNC ERROR]", e)
-
-        # Broadcast balik ke semua subscriber agar UI sinkron
-        try:pass
-            
-        except Exception as e:
-            print("[MQTT BROADCAST ERROR]", e)
-
+            # sinkron ke database
+            try:
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE kontrol
+                    SET status = %s, updated_at = %s
+                    WHERE name = %s
+                """, (payload_norm, datetime.now(), f"pompa{rid}"))
+                conn.commit()
+                cur.close()
+                conn.close()
+                print(f"[DB SYNC] relay{rid} updated to {payload_norm}")
+            except Exception as e:
+                print("[DB RELAY SYNC ERROR]", e)
 
 
 insert_lock = threading.Lock()
 
 def redis_to_db_loop():
     interval = 0.5  # detik
-    next_run = time.time()
-
     while True:
         try:
-            data = redis_client.hgetall("sensor_latest") or {}
+            # cari semua buffer yang belum kadaluarsa
+            keys = sorted(redis_client.keys("sensor_buffer:*"))
+            if not keys:
+                print("[REDIS LOOP] skip insert (tidak ada data)")
+                time.sleep(interval)
+                continue
 
-            # hanya insert kalau ada minimal 1 data valid
+            # ambil key terbaru
+            latest_key = keys[-1]
+            data = redis_client.hgetall(latest_key)
             valid_fields = {k: v for k, v in data.items() if v not in (None, '', 'None')}
-            if len(valid_fields) > 0:
-                print(f"[REDIS SEND] inserting data: {data}")
+
+            if valid_fields:
+                print(f"[REDIS SEND] inserting data from {latest_key}: {valid_fields}")
                 try:
                     conn = get_db_conn()
                     cur = conn.cursor()
@@ -232,19 +241,17 @@ def redis_to_db_loop():
                     conn.commit()
                     cur.close()
                     conn.close()
-                    print("[DB OK] inserted new row")
+                    print(f"[DB OK] inserted new row from {latest_key}")
                 except Exception as e:
                     print("[DB SENSOR ERROR]", e)
             else:
-                print("[REDIS LOOP] skip insert (tidak ada data)")
+                print(f"[REDIS LOOP] {latest_key} kosong / tidak valid")
 
-            # jeda tetap 0.5 detik (biar interval stabil)
-            next_run += interval
-            time.sleep(max(0, next_run - time.time()))
+            time.sleep(interval)
 
         except Exception as e:
             print("[REDIS LOOP ERROR]", e)
-            time.sleep(1)
+            time.sleep(2)
 
             
 client = mqtt.Client(client_id="SatriaSensors_FlaskDT", protocol=mqtt.MQTTv311)
